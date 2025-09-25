@@ -1,0 +1,195 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jadwal Harian & Absen Interaktif</title>
+<style>
+:root{
+  --bg1:#89f7fe; --bg2:#66a6ff;
+  --card:#fff;
+  --blue:#e0f0ff; --blue-text:#003366;
+  --yellow:#fff3b0; --yellow-text:#664d00;
+  --green:#28a745; --green-text:#fff;
+  --red:#ff4d4d; --red-text:#fff;
+}
+body{margin:0;padding:24px;font-family:Arial,sans-serif;background:linear-gradient(135deg,var(--bg1),var(--bg2));}
+.panel{max-width:920px;margin:0 auto;background:var(--card);padding:18px;border-radius:14px;box-shadow:0 6px 20px rgba(0,0,0,0.12);}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.datetime{display:flex;flex-direction:column;}
+.clock{font-size:28px;font-weight:700;}
+.date{font-size:14px;color:#555;margin-top:4px;}
+#currentActivity{text-align:center;font-weight:700;margin:12px 0;font-size:16px;}
+#countdown{text-align:center;font-weight:700;margin-bottom:10px;font-size:15px;color:#333;}
+.schedule-list{list-style:none;padding:0;margin:0;display:grid;gap:10px;}
+.item{position:relative;display:flex;justify-content:space-between;align-items:center;padding:12px;border-radius:10px;transition:all .3s ease;border:1px solid rgba(0,0,0,0.05);}
+.info{flex:1;min-width:0;}
+.time{font-weight:700;font-size:14px;color:#222;display:block;}
+.activity{font-size:15px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.statusText{font-size:13px;color:#444;margin-top:6px;opacity:.9;}
+.btn-wrap{width:150px;display:flex;justify-content:flex-end;align-items:center;position:relative;}
+.absen-btn{padding:10px 14px;border-radius:8px;border:none;cursor:pointer;font-weight:700;color:#fff;background:linear-gradient(90deg,#007bff,#00c6ff);background-size:200% 100%;transition:all .3s;}
+.absen-btn.disabled{background:#aaa;cursor:not-allowed;}
+.absen-btn.active{background:linear-gradient(90deg,#28a745,#71ff7a);color:#fff;transform:scale(1.1);transition:all .3s;}
+.burst{position:absolute;width:8px;height:8px;border-radius:50%;background:#28a745;pointer-events:none;animation:burstAnim 0.6s forwards;}
+@keyframes burstAnim{0%{transform:scale(0) translate(0,0);opacity:1;}50%{transform:scale(1.5) translate(var(--x),var(--y));opacity:1;}100%{transform:scale(0) translate(var(--x),var(--y));opacity:0;}}
+.item.state-upcoming{background:var(--blue);color:var(--blue-text);}
+.item.state-now{background:var(--yellow);color:var(--yellow-text);}
+.item.state-done{background:#28a745;color:#fff;text-decoration:line-through;}
+.item.state-missed{background:#ff4d4d;color:#fff;font-weight:800;}
+.item.state-bedtime{background:#ff0000;color:#fff;font-weight:800;animation:blink 1s infinite;}
+@keyframes blink{0%,50%,100%{opacity:1;}25%,75%{opacity:0.4;}}
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="header">
+    <div class="datetime">
+      <div id="clock" class="clock">00:00:00</div>
+      <div id="date" class="date"></div>
+    </div>
+    <div style="text-align:right;">
+      <small>Notif: <span id="notifStatus">(minta izin)</span></small>
+    </div>
+  </div>
+  <div id="currentActivity">📍 Sekarang: -</div>
+  <div id="countdown">⏳ Countdown: -</div>
+  <ul id="scheduleList" class="schedule-list"></ul>
+  <div id="nightStatus" style="text-align:center;font-weight:700;margin-top:12px;"></div>
+</div>
+
+<script>
+// ===== DATA JADWAL =====
+const weekly = {
+"Senin":[
+{time:"04:30-04:35",act:"Sholat Subuh"},
+{time:"06:00-06:30",act:"Sarapan"},
+{time:"07:00-13:30",act:"Sekolah"},
+{time:"12:00-12:05",act:"Sholat Dzuhur"},
+{time:"13:30-14:00",act:"Makan Siang"},
+{time:"15:15-15:20",act:"Sholat Ashar"},
+{time:"15:20-17:00",act:"Belajar"},
+{time:"17:30-17:35",act:"Sholat Maghrib"},
+{time:"18:00-18:30",act:"Makan Malam"},
+{time:"19:00-19:05",act:"Sholat Isya"},
+{time:"19:15-20:30",act:"Ngoding / Belajar"},
+{time:"21:00-23:00",act:"Tidur"}],
+// ... ulangi untuk Selasa–Minggu sama seperti sebelumnya
+};
+
+// ===== HELPERS =====
+function parseTime(hm){const [h,m]=hm.split(":").map(Number);return{h,m};}
+function toDateToday(hm){const {h,m}=parseTime(hm);const d=new Date();return new Date(d.getFullYear(),d.getMonth(),d.getDate(),h,m,0,0);}
+let itemsState=[];
+const scheduleList=document.getElementById("scheduleList");
+const currentActivityEl=document.getElementById("currentActivity");
+const countdownEl=document.getElementById("countdown");
+const clockEl=document.getElementById("clock");
+const dateEl=document.getElementById("date");
+const notifStatusEl=document.getElementById("notifStatus");
+const nightStatusEl=document.getElementById("nightStatus");
+
+// ===== NOTIF =====
+function initNotifications(){
+  if(!("Notification"in window)){notifStatusEl.textContent="Browser tidak mendukung";return;}
+  if(Notification.permission==="granted"){notifStatusEl.textContent="diizinkan";}
+  else if(Notification.permission==="denied"){notifStatusEl.textContent="ditolak";}
+  else{notifStatusEl.textContent="minta izin";Notification.requestPermission().then(p=>notifStatusEl.textContent=p);}
+}
+function sendNotification(title,body){if("Notification"in window&&Notification.permission==="granted"){new Notification(title,{body});}}
+
+// ===== RENDER =====
+function renderToday(){
+  scheduleList.innerHTML=""; itemsState=[];
+  const now=new Date();
+  const dayName=now.toLocaleDateString("id-ID",{weekday:"long"});
+  dateEl.textContent=`${now.toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}`;
+  const list=weekly[dayName]||[];
+  list.forEach((it,idx)=>{
+    const [start,end]=it.time.split("-");
+    const li=document.createElement("li"); li.className="item state-upcoming";
+    li.innerHTML=`<div class="info"><span class="time">${start}→${end}</span><span class="activity">${it.act}</span><div class="statusText" id="status-${idx}"></div></div>
+    <div class="btn-wrap"><button class="absen-btn disabled" id="btn-${idx}">Absen</button></div>`;
+    scheduleList.appendChild(li);
+    itemsState.push({start,end,act:it.act,absen:false,notifSent:false,dom:li,btnId:`btn-${idx}`,statusId:`status-${idx}`});
+    document.getElementById(`btn-${idx}`).addEventListener("click",()=>doAbsen(idx));
+  });
+}
+
+// ===== ABSEN =====
+function doAbsen(i){
+  const item=itemsState[i]; if(!item||item.absen) return;
+  const now=new Date(); const start=toDateToday(item.start); const end=toDateToday(item.end);
+  if(now<start||now>end) return;
+  const btn=document.getElementById(item.btnId); const li=item.dom;
+  btn.classList.add("active"); setTimeout(()=>{btn.classList.remove("active");},300);
+  for(let j=0;j<15;j++){
+    const bubble=document.createElement("span");
+    bubble.className="burst";
+    bubble.style.setProperty('--x',(Math.random()*100-50)+'px');
+    bubble.style.setProperty('--y',(Math.random()*-80)+'px');
+    li.querySelector(".btn-wrap").appendChild(bubble);
+    setTimeout(()=>bubble.remove(),600);
+  }
+  setTimeout(()=>{
+    btn.textContent="✅ Hadir"; btn.disabled=true; li.classList.remove("state-upcoming","state-now","state-missed"); li.classList.add("state-done"); document.getElementById(item.statusId).textContent="Absen: Hadir"; item.absen=true;
+  },600);
+}
+
+function markMissed(i){
+  const item=itemsState[i]; if(!item||item.absen) return;
+  const li=item.dom; const btn=document.getElementById(item.btnId); 
+  btn.textContent="❌ Bolos"; btn.disabled=true; li.classList.remove("state-upcoming","state-now","state-done"); li.classList.add("state-missed"); 
+  document.getElementById(item.statusId).textContent="Status: Bolos";
+}
+
+// ===== UPDATE =====
+function updateAll(){
+  const now=new Date();
+  clockEl.textContent=now.toLocaleTimeString("id-ID",{hour12:false});
+  let currentAct="Tidak ada kegiatan sekarang";
+  let nextAct=null, nextTimeDiff=Infinity;
+
+  itemsState.forEach((it,idx)=>{
+    const start=toDateToday(it.start), end=toDateToday(it.end), li=it.dom, btn=document.getElementById(it.btnId);
+    if(now>=end){if(!it.absen) markMissed(idx); btn.disabled=true; btn.classList.add("disabled");}
+    else if(now>=start&&now<end){
+      currentAct=it.act;
+      li.classList.remove("state-upcoming","state-missed","state-done"); 
+      li.classList.add("state-now"); 
+      document.getElementById(it.statusId).textContent="Sedang berlangsung"; 
+      if(!it.absen){btn.disabled=false; btn.classList.remove("disabled");}
+      if(!it.notifSent){sendNotification("⏰ Jadwal dimulai", it.act + " ("+it.start+")"); it.notifSent=true;}
+      // Jam tidur
+      if(it.act.toLowerCase().includes("tidur")){
+        li.classList.add("state-bedtime");
+        if(!it.notifSent){alert("⚠️ Waktunya tidur! Segera hentikan kegiatan sekarang!"); it.notifSent=true;}
+      }
+    } else {li.classList.remove("state-now","state-missed","state-bedtime"); if(!it.absen) li.classList.add("state-upcoming"); btn.disabled=true; btn.classList.add("disabled");}
+
+    if(!it.absen && now<start){
+      const diff=start-now; if(diff<nextTimeDiff){nextTimeDiff=diff; nextAct=it.act;}
+    }
+  });
+
+  currentActivityEl.textContent="📍 Sekarang: "+currentAct;
+
+  if(nextAct){
+    const hours=Math.floor(nextTimeDiff/3600000);
+    const minutes=Math.floor((nextTimeDiff%3600000)/60000);
+    const seconds=Math.floor((nextTimeDiff%60000)/1000);
+    countdownEl.textContent=`⏳ ${hours}h ${minutes}m ${seconds}s lagi mulai: ${nextAct}`;
+  } else {countdownEl.textContent="⏳ Tidak ada kegiatan berikutnya";}
+
+  if(now.getHours()>=21){nightStatusEl.textContent="Sudah malam, sebaiknya tidur!";} else {nightStatusEl.textContent="";}
+}
+
+// ===== START =====
+initNotifications();
+renderToday();
+updateAll();
+setInterval(updateAll,1000);
+</script>
+</body>
+</html>
